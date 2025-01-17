@@ -1,7 +1,7 @@
 # RouterOS IPv6 Cloudflare DDNS 同步脚本
 
 ## 功能说明
-此脚本用于自动同步 RouterOS 的 IPv6 地址到 Cloudflare DNS，并在本地创建相应的防火墙地址列表。
+此脚本用于自动同步 RouterOS 的 IPv6 地址到 Cloudflare DNS，并在本地创建相应的防火墙地址列表。脚本自动创建域名。
 
 ## 使用说明
 
@@ -80,16 +80,32 @@
 - 可能受到中间人攻击(MITM)
 - 无法验证 Cloudflare API 服务器的身份
 
-### 2. 增强安全性的方法
+## 安全性说明
+
+### SSL 证书验证
+1. 当前脚本使用 `check-certificate=no` 禁用了 SSL 证书验证，这是为了避免证书相关的问题
+2. 这种设置可能带来安全风险：
+   - 可能受到中间人攻击(MITM)
+   - 无法验证 Cloudflare API 服务器的身份
+
+### 增强安全性的方法
 如果需要更高的安全性，可以：
-1. 安装 Cloudflare 根证书
-2. 修改脚本启用证书验证
+1. 安装 Cloudflare 根证书：
+   ```routeros
+   # 使用 install-cloudflare-cert.rsc 脚本安装证书
+   /system script run install-cloudflare-cert
+   ```
+
+2. 修改脚本中的 API 调用，启用证书验证：
+   - 移除所有 `check-certificate=no` 参数
+   - 添加 `certificate=cloudflare_ca` 参数
+
 3. 定期更新证书
 
-### 3. 数据安全
-- API Token 应妥善保管，避免泄露
-- 建议使用最小权限原则配置 API Token
-- 定期更换 API Token
+### 使用建议
+1. 在内部网络环境中，使用当前的 `check-certificate=no` 设置是可接受的
+2. 如果路由器直接暴露在公网，建议启用证书验证
+3. 无论是否启用证书验证，都要确保 API Token 的安全性
 
 ## 免责声明
 
