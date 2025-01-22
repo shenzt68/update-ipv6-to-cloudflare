@@ -1,7 +1,7 @@
 # RouterOS IPv6 Cloudflare DDNS 同步脚本
 
 ## 功能说明
-此脚本用于自动同步 RouterOS 的 IPv6 地址到 Cloudflare DNS，并在本地创建相应的防火墙地址列表。脚本自动创建域名。
+这个脚本用于自动更新 RouterOS 设备上的 IPv6 地址到 Cloudflare DNS 记录。脚本会自动生成基于 MAC 地址的 IPv6 地址（使用 EUI-64 格式），并将其更新到 Cloudflare DNS 记录中。同时，脚本也会在本地防火墙地址列表中维护这些 IPv6 地址。
 
 ## 使用说明
 
