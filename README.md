@@ -28,7 +28,7 @@
 ### 4. 服务器配置数组
 在脚本中配置 `servers` 数组，每个条目包含 5 个参数：
 ```routeros
-{"MAC后缀"; "二级域名"; "域名"; "备注"; "Zone ID"}
+{"MAC地址"; "二级域名"; "域名"; "备注"; "Zone ID"}
 ```
 
 参数说明：
@@ -45,11 +45,11 @@
 ```routeros
 :local servers {
     # 普通二级域名
-    {"xx:xx:xx:xx:xx:17"; "www"; "example.com"; "NAS-1"; "zone-id-1"};
+     {"00:11:22:33:44:55"; "www"; "example.com"; "Web-Server"; "your-zone-id-1"};
     # 通配符域名
-    {"xx:xx:xx:xx:xx:15"; "*"; "example.com"; "NAS-2"; "zone-id-1"};
+    {"aa:bb:cc:dd:ee:ff"; "@"; "example.org"; "Mail-Server"; "your-zone-id-2"};
     # 根域名
-    {"xx:xx:xx:xx:xx:15"; "@"; "example.org"; "NAS-3"; "zone-id-2"}
+    {"11:22:33:44:55:66"; "*"; "example.net"; "Wildcard-Server"; "your-zone-id-3"}
 }
 ```
 
