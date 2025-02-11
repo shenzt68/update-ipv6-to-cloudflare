@@ -1,21 +1,37 @@
 # PPPoE 接口名称
-:local pppoeInterface "pppoe-out1"
+:local pppoeInterface "your-pppoe-interface"
 
 # Cloudflare API Token
-# 用于认证Cloudflare API请求，可以在Cloudflare面板 -> My Profile -> API Tokens中创建
-:local authToken "你的API Token"
+:local authToken "your-cloudflare-api-token"
 
 # 服务器配置数组
-# 数组格式：{"MAC地址"; "子域名"; "域名"; "备注"; "Zone ID"}
-# MAC地址：服务器的MAC地址
-# 子域名：@ 表示根域名，* 表示通配符域名，其他为具体子域名
-# 域名：Cloudflare上的域名
-# 备注：用于防火墙地址列表的备注
-# Zone ID：域名对应的Cloudflare Zone ID
 :local servers {
-    {"00:11:22:33:44:55"; "www"; "example.com"; "Web-Server"; "your-zone-id-1"};
-    {"aa:bb:cc:dd:ee:ff"; "@"; "example.org"; "Mail-Server"; "your-zone-id-2"};
-    {"11:22:33:44:55:66"; "*"; "example.net"; "Wildcard-Server"; "your-zone-id-3"}
+    {"00:00:00:00:00:01"; "sub1";"example.com"; "Server1"; "your-zone-id1"};
+    {"00:00:00:00:00:02"; "sub2";"example.com"; "Server2"; "your-zone-id1"};
+    {"00:00:00:00:00:03"; "*"; "example.org"; "Server3"; "your-zone-id2"};
+    {"00:00:00:00:00:04"; "@"; "example.org"; "Server4"; "your-zone-id2"}
+}
+
+# 确保统一的IPv6地址列表存在
+:local unifiedListName "allow ipv6"
+:do {
+    :local existingList [/ipv6 firewall address-list find where list=$unifiedListName]
+    :if ([:len $existingList] = 0) do={
+        :log info ("创建统一地址列表: " . $unifiedListName)
+        /ipv6 firewall address-list add list=$unifiedListName address="::/0" comment="初始化列表"
+    }
+    # 删除初始化条目
+    /ipv6 firewall address-list remove [find where list=$unifiedListName and address="::/0"]
+} on-error={
+    :log error ("创建统一地址列表失败")
+}
+
+# 服务器配置数组
+:local servers {
+    {"02:42:c0:a8:59:17"; "mov";"tophedu.org"; "NAS-mov"; "102f492432a879add6dc7c3a04207bd3"};
+    {"D0:11:E5:9A:D3:6F"; "mini";"tophedu.org"; "Apple"; "102f492432a879add6dc7c3a04207bd3"};
+    {"02:42:c0:a8:59:15"; "*"; "cffq.us.kg"; "NAS-nmp1"; "1a6d14d87f45943a4c1a71040956de23"};
+    {"02:42:c0:a8:59:15"; "@"; "cffq.us.kg"; "NAS-nmp2"; "1a6d14d87f45943a4c1a71040956de23"}
 }
 
 # 获取IPv6前缀
@@ -51,76 +67,130 @@
     # 构建域名
     :local fullDomain
     :if ($subdomain = "@") do={
-        # 根域名
         :set fullDomain $domain
     } else {
         :if ($subdomain = "*") do={
-            # 通配符域名，使用 *.domain 格式
             :set fullDomain ("*." . $domain)
         } else {
-            # 普通二级域名
             :set fullDomain ($subdomain . "." . $domain)
         }
     }
     
-    # 生成IPv6地址
-    :local macStr ""
-    :local currentChar ""
-    :for i from=0 to=([:len $mac]-1) do={
-        :set currentChar [:pick $mac $i]
-        :if ($currentChar != ":") do={
-            :set macStr ($macStr . $currentChar)
+    # 从邻居表中查找IPv6地址
+    :local foundValidIp false
+    :local fullIpv6 ""
+    :local neighbors [/ipv6 neighbor find where mac-address=$mac]
+    
+    :foreach neighbor in=$neighbors do={
+        :local address [/ipv6 neighbor get $neighbor address]
+        :if ([:pick $address 0 1] = "2" || [:pick $address 0 1] = "3") do={
+            :do {
+                :local pingResult [/ping $address count=2 interval=1]
+                :if ([:len $pingResult] > 0) do={
+                    :set fullIpv6 $address
+                    :set foundValidIp true
+                    :log info ("找到可用的IPv6地址: " . $fullIpv6)
+                    :break
+                }
+            } on-error={}
         }
     }
     
-    # 分割MAC地址为前24位和后24位
-    :local firstPart [:pick $macStr 0 6]
-    :local secondPart [:pick $macStr 6 12]
-    
-    # 修改第7位（U/L位）
-    :local firstByte [:pick $firstPart 0 2]
-    :local firstByteNum [:tonum ("0x" . $firstByte)]
-    :set firstByteNum ($firstByteNum ^ 2)
-    :local hexChars "0123456789abcdef"
-    :local newFirstByte ([:pick $hexChars (($firstByteNum >> 4) & 15)] . [:pick $hexChars ($firstByteNum & 15)])
-    
-    # 构建完整的EUI-64标识符
-    :local modifiedFirst ($newFirstByte . [:pick $firstPart 2 6])
-    :local eui64 ($modifiedFirst . "fffe" . $secondPart)
-    
-    # 按照标准IPv6格式分组
-    :local group1 [:pick $eui64 0 4]
-    :local group2 [:pick $eui64 4 8]
-    :local group3 [:pick $eui64 8 12]
-    :local group4 [:pick $eui64 12 16]
-    
-    # 去掉第一组前导零
-    :while ([:len $group1] > 1 && [:pick $group1 0] = "0") do={
-        :set group1 [:pick $group1 1 [:len $group1]]
+    # 如果没有找到有效的IPv6地址，则使用EUI-64生成
+    :if (!$foundValidIp) do={
+        :log info ("未找到可用的IPv6地址，使用EUI-64生成")
+        
+        :local macStr ""
+        :local currentChar ""
+        :for i from=0 to=([:len $mac]-1) do={
+            :set currentChar [:pick $mac $i]
+            :if ($currentChar != ":") do={
+                :set macStr ($macStr . $currentChar)
+            }
+        }
+        
+        # 分割MAC地址为前24位和后24位
+        :local firstPart [:pick $macStr 0 6]
+        :local secondPart [:pick $macStr 6 12]
+        
+        # 修改第7位（U/L位）
+        :local firstByte [:pick $firstPart 0 2]
+        :local firstByteNum [:tonum ("0x" . $firstByte)]
+        :set firstByteNum ($firstByteNum ^ 2)
+        :local hexChars "0123456789abcdef"
+        :local newFirstByte ([:pick $hexChars (($firstByteNum >> 4) & 15)] . [:pick $hexChars ($firstByteNum & 15)])
+        
+        # 构建完整的EUI-64标识符
+        :local modifiedFirst ($newFirstByte . [:pick $firstPart 2 6])
+        :local eui64 ($modifiedFirst . "fffe" . $secondPart)
+        
+        # 按照标准IPv6格式分组
+        :local group1 [:pick $eui64 0 4]
+        :local group2 [:pick $eui64 4 8]
+        :local group3 [:pick $eui64 8 12]
+        :local group4 [:pick $eui64 12 16]
+        
+        # 去掉第一组前导零
+        :while ([:len $group1] > 1 && [:pick $group1 0] = "0") do={
+            :set group1 [:pick $group1 1 [:len $group1]]
+        }
+        
+        # 组合成标准格式的接口ID
+        :local interfaceId ($group1 . ":" . $group2 . ":" . $group3 . ":" . $group4)
+        
+        # 生成完整的IPv6地址
+        :if ([:pick $prefix ([:len $prefix] - 1)] = ":") do={
+            :set prefix [:pick $prefix 0 ([:len $prefix] - 1)]
+        }
+        # 检查并修复前缀中的双冒号
+        :if ([:find $prefix "::"] > 0) do={
+            :set prefix [:pick $prefix 0 [:find $prefix "::"]]
+        }
+        # 确保前缀不以冒号结尾
+        :while ([:pick $prefix ([:len $prefix] - 1)] = ":") do={
+            :set prefix [:pick $prefix 0 ([:len $prefix] - 1)]
+        }
+        :set fullIpv6 ($prefix . ":" . $interfaceId)
     }
-    
-    # 组合成标准格式的接口ID
-    :local interfaceId ($group1 . ":" . $group2 . ":" . $group3 . ":" . $group4)
-    
-    # 生成完整的IPv6地址
-    :if ([:pick $prefix ([:len $prefix] - 1)] = ":") do={
-        :set prefix [:pick $prefix 0 ([:len $prefix] - 1)]
-    }
-    # 检查并修复前缀中的双冒号
-    :if ([:find $prefix "::"] > 0) do={
-        :set prefix [:pick $prefix 0 [:find $prefix "::"]]
-    }
-    # 确保前缀不以冒号结尾
-    :while ([:pick $prefix ([:len $prefix] - 1)] = ":") do={
-        :set prefix [:pick $prefix 0 ([:len $prefix] - 1)]
-    }
-    :local fullIpv6 ($prefix . ":" . $interfaceId)
     
     :log info ("MAC地址: " . $mac)
-    :log info ("接口ID: " . $interfaceId)
     :log info ("完整IPv6地址: " . $fullIpv6)
     
-    # 检查地址列表
+    # 检查单独的服务器地址列表
+    :local listName ("allow " . $comment . " server ipv6")
+    :local existingList [/ipv6 firewall address-list find where list=$listName]
+    
+    # 检查统一的IPv6地址列表
+    :local unifiedListName "allow ipv6"
+    :log info ("检查统一地址列表是否存在: " . $unifiedListName)
+    :local existingUnifiedList [/ipv6 firewall address-list find where list=$unifiedListName]
+    :log info ("现有统一列表条目数: " . [:len $existingUnifiedList])
+    
+    # 检查IPv6地址是否已存在于统一列表中
+    :local existingIp [/ipv6 firewall address-list find where list=$unifiedListName and address=($fullIpv6 . "/128")]
+    :if ([:len $existingIp] = 0) do={
+        :log info ("向统一列表添加新地址: " . $fullIpv6)
+        /ipv6 firewall address-list add list=$unifiedListName address=($fullIpv6 . "/128") comment=($comment . " - " . $fullDomain)
+    } else={
+        :log info ("地址已存在于统一列表中，更新注释: " . $fullIpv6)
+        :local currentComment [/ipv6 firewall address-list get $existingIp comment]
+        :if ([:find $currentComment $comment] < 0) do={
+            :local newComment
+            :if ([:len $currentComment] > 0) do={
+                :local baseComment [:pick $currentComment 0 [:find $currentComment " - "]]
+                :if ([:len $baseComment] = 0) do={
+                    :set baseComment $currentComment
+                }
+                :set newComment ($baseComment . " ，" . $comment . " - " . $fullDomain)
+            } else={
+                :set newComment ($comment . " - " . $fullDomain)
+            }
+            :log info ("更新地址注释为: " . $newComment)
+            /ipv6 firewall address-list set $existingIp comment=$newComment
+        }
+    }
+
+    # 处理单独的服务器地址列表
     :local listName ("allow " . $comment . " server ipv6")
     :local existingList [/ipv6 firewall address-list find where list=$listName]
     
@@ -172,7 +242,6 @@
         :if ($success) do={
             /ipv6 firewall address-list add list=$listName address=$fullIpv6 comment=$fullDomain
         }
-        
     } else={
         # 获取当前列表中的地址，并移除CIDR前缀（如果有）
         :local currentIp [/ipv6 firewall address-list get [find list=$listName] address]
@@ -196,7 +265,7 @@
         :log info "新地址: $fullIpv6"
 
         :if ([:len $currentIp] = 0 || $currentPrefix != $newPrefix || $currentIp != $fullIpv6) do={
-            :log info "需要更新DNS记录"
+            :log info ("更新DNS记录: " . $fullDomain)
             :local success false
             
             # 先获取并更新 DNS 记录
@@ -232,11 +301,15 @@
             # 只有在DNS更新成功后才更新本地地址列表
             :if ($success) do={
                 /ipv6 firewall address-list set [find list=$listName] address=($fullIpv6 . "/128")
+                # 更新统一列表中的地址
+                :if ([:len $existingUnifiedEntry] = 0) do={
+                    /ipv6 firewall address-list add list=$unifiedListName address=($fullIpv6 . "/128") comment=($comment . " - " . $fullDomain)
+                } else={
+                    /ipv6 firewall address-list set $existingUnifiedEntry address=($fullIpv6 . "/128")
+                }
             }
-        } else {
-            :log info "地址未变化，无需更新"
         }
     }
 }
 
-:log info "脚本运行结束"
+:log info "脚本运行完成"
